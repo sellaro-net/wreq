@@ -134,6 +134,62 @@ async fn test_range_requests_use_identity_encoding() {
         .unwrap();
 }
 
+#[tokio::test]
+async fn test_auto_accept_encoding_disabled_keeps_caller_headers_and_decodes() {
+    let server = server::http(move |req| async move {
+        match req.uri().path() {
+            "/plain" => {
+                assert!(!req.headers().contains_key(header::ACCEPT_ENCODING));
+            }
+            "/range" => {
+                assert_eq!(req.headers()[header::RANGE], "bytes=0-3");
+                assert!(!req.headers().contains_key(header::ACCEPT_ENCODING));
+            }
+            "/range-caller" => {
+                assert_eq!(req.headers()[header::RANGE], "bytes=0-3");
+                assert_eq!(req.headers()[header::ACCEPT_ENCODING], "gzip");
+            }
+            path => panic!("unexpected path: {path}"),
+        }
+
+        // Unsolicited encoding: the response is still decoded.
+        http::Response::builder()
+            .header("content-encoding", "gzip")
+            .body(gzip_compress(b"decoded").into())
+            .unwrap()
+    });
+    let base = format!("http://{}", server.addr());
+
+    let client = wreq::Client::builder()
+        .auto_accept_encoding(false)
+        .build()
+        .unwrap();
+
+    let body = client
+        .get(format!("{base}/plain"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(body, "decoded");
+
+    client
+        .get(format!("{base}/range"))
+        .header(header::RANGE, "bytes=0-3")
+        .send()
+        .await
+        .unwrap();
+    client
+        .get(format!("{base}/range-caller"))
+        .header(header::RANGE, "bytes=0-3")
+        .header(header::ACCEPT_ENCODING, "gzip")
+        .send()
+        .await
+        .unwrap();
+}
+
 async fn gzip_case(response_size: usize, chunk_size: usize) {
     use futures_util::stream::StreamExt;
 

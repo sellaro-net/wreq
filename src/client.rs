@@ -178,6 +178,13 @@ struct Config {
         feature = "deflate",
     ))]
     accept_encoding: AcceptEncoding,
+    #[cfg(any(
+        feature = "gzip",
+        feature = "zstd",
+        feature = "brotli",
+        feature = "deflate",
+    ))]
+    auto_accept_encoding: bool,
     connect_timeout: Option<Duration>,
     connection_verbose: bool,
     pool_idle_timeout: Option<Duration>,
@@ -266,6 +273,13 @@ impl Client {
                     feature = "deflate",
                 ))]
                 accept_encoding: AcceptEncoding::default(),
+                #[cfg(any(
+                    feature = "gzip",
+                    feature = "zstd",
+                    feature = "brotli",
+                    feature = "deflate",
+                ))]
+                auto_accept_encoding: true,
                 connect_timeout: None,
                 connection_verbose: false,
                 pool_idle_timeout: Some(Duration::from_secs(90)),
@@ -607,7 +621,10 @@ impl ClientBuilder {
                 feature = "deflate",
             ))]
             let service = ServiceBuilder::new()
-                .layer(DecompressionLayer::new(config.accept_encoding))
+                .layer(DecompressionLayer::new(
+                    config.accept_encoding,
+                    config.auto_accept_encoding,
+                ))
                 .service(service);
 
             let service = ServiceBuilder::new()
@@ -951,6 +968,42 @@ impl ClientBuilder {
 
         #[cfg(not(feature = "deflate"))]
         {
+            self
+        }
+    }
+
+    /// Controls whether requests without an `Accept-Encoding` header get one generated from the
+    /// enabled decompression algorithms.
+    ///
+    /// When set to `false`, requests are sent with exactly the caller's headers: no
+    /// `Accept-Encoding` is added, and Range requests are not rewritten to
+    /// `Accept-Encoding: identity`. Responses carrying a supported `Content-Encoding` are still
+    /// decompressed. A caller-provided `Accept-Encoding` header is always sent unchanged.
+    ///
+    /// Default is `true`. This method exists even if no decompression feature is enabled; it has
+    /// no effect in that case.
+    #[inline]
+    pub fn auto_accept_encoding(self, enabled: bool) -> ClientBuilder {
+        #[cfg(any(
+            feature = "gzip",
+            feature = "zstd",
+            feature = "brotli",
+            feature = "deflate",
+        ))]
+        {
+            let mut this = self;
+            this.config.auto_accept_encoding = enabled;
+            this
+        }
+
+        #[cfg(not(any(
+            feature = "gzip",
+            feature = "zstd",
+            feature = "brotli",
+            feature = "deflate",
+        )))]
+        {
+            let _ = enabled;
             self
         }
     }
