@@ -383,4 +383,4 @@ required-features = ["compio-rt"]
 btls = { git = "https://github.com/0x676e67/btls", branch = "main" }
 btls-sys = { git = "https://github.com/0x676e67/btls", branch = "main" }
 # `http2::ext::HeadersPriority` (per-request HEADERS priority) is not in a crates.io release yet.
-http2 = { git = "https://github.com/sellaro-net/http2", rev = "bdb2c60cd9b4125c28913191b6f758d00e5f136c" }
+http2 = { git = "https://github.com/0x676e67/http2", rev = "bdb2c60cd9b4125c28913191b6f758d00e5f136c" }
