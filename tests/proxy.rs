@@ -440,14 +440,25 @@ async fn proxy_tunnel_connect_error() {
 /// Resolver that maps a fixed name table and records every name it was asked for.
 #[derive(Clone, Default)]
 struct TableResolver {
-    table: std::sync::Arc<std::collections::HashMap<&'static str, std::net::SocketAddr>>,
+    table: std::sync::Arc<std::collections::HashMap<&'static str, Vec<std::net::SocketAddr>>>,
     queried: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl TableResolver {
     fn new(entries: &[(&'static str, std::net::SocketAddr)]) -> Self {
+        Self::with_answers(
+            entries
+                .iter()
+                .map(|&(name, addr)| (name, vec![addr]))
+                .collect(),
+        )
+    }
+
+    fn with_answers(
+        table: std::collections::HashMap<&'static str, Vec<std::net::SocketAddr>>,
+    ) -> Self {
         Self {
-            table: std::sync::Arc::new(entries.iter().copied().collect()),
+            table: std::sync::Arc::new(table),
             queried: Default::default(),
         }
     }
@@ -460,10 +471,10 @@ impl TableResolver {
 impl wreq::dns::Resolve for TableResolver {
     fn resolve(&self, name: wreq::dns::Name) -> wreq::dns::Resolving {
         self.queried.lock().unwrap().push(name.as_str().to_owned());
-        let answer = self.table.get(name.as_str()).copied();
+        let answer = self.table.get(name.as_str()).cloned();
         Box::pin(async move {
             match answer {
-                Some(addr) => Ok(Box::new(std::iter::once(addr)) as wreq::dns::Addrs),
+                Some(addrs) => Ok(Box::new(addrs.into_iter()) as wreq::dns::Addrs),
                 None => Err("name rejected by resolver".into()),
             }
         })
@@ -551,5 +562,78 @@ async fn resolver_enforced_egress_tunnels_http_to_numeric_target() {
             .queried()
             .iter()
             .any(|name| name == "hyper.rs.local")
+    );
+}
+
+/// Minimal SOCKS4 server that records one request (header and user ID) and rejects it.
+#[cfg(feature = "socks")]
+async fn rejecting_socks4_server() -> (
+    std::net::SocketAddr,
+    tokio::sync::oneshot::Receiver<Vec<u8>>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        // VN, CD, DSTPORT, DSTIP, then a NUL-terminated user ID.
+        let mut request = vec![0; 8];
+        stream.read_exact(&mut request).await.unwrap();
+        loop {
+            let byte = stream.read_u8().await.unwrap();
+            request.push(byte);
+            if byte == 0 {
+                break;
+            }
+        }
+        // Reply code 91: request rejected or failed.
+        stream
+            .write_all(&[0, 0x5b, 0, 0, 0, 0, 0, 0])
+            .await
+            .unwrap();
+        let _ = tx.send(request);
+    });
+    (addr, rx)
+}
+
+#[cfg(feature = "socks")]
+#[tokio::test]
+async fn socks4_uses_ipv4_answer_and_exposes_error_source() {
+    let (proxy_addr, request) = rejecting_socks4_server().await;
+    let resolver = TableResolver::with_answers(
+        [(
+            "dual.test",
+            vec![
+                "[2001:db8::10]:0".parse().unwrap(),
+                "192.0.2.10:0".parse().unwrap(),
+            ],
+        )]
+        .into(),
+    );
+
+    let err = Client::builder()
+        .proxy(wreq::Proxy::all(format!("socks4://{proxy_addr}")).unwrap())
+        .dns_resolver(resolver)
+        .build()
+        .unwrap()
+        .get("http://dual.test:8080/")
+        .send()
+        .await
+        .unwrap_err();
+
+    // VN=4, CD=CONNECT, port 8080, the first IPv4 address of the answer, empty user ID.
+    assert_eq!(request.await.unwrap(), [4, 1, 0x1f, 0x90, 192, 0, 2, 10, 0]);
+    // The SOCKS handshake error stays reachable as a typed source.
+    assert!(
+        err.is_proxy_connect(),
+        "proxy connect error expected, got: {err:?}"
+    );
+    let chain = support::error::inspect(err);
+    assert_eq!(
+        chain.last().map(String::as_str),
+        Some("General SOCKS server failure"),
+        "unexpected error chain: {chain:?}"
     );
 }
