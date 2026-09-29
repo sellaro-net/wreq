@@ -207,6 +207,7 @@ struct Config {
     hickory_dns: bool,
     dns_overrides: HashMap<Cow<'static, str>, Vec<SocketAddr>>,
     dns_resolver: Option<Arc<dyn Resolve>>,
+    resolver_enforced_egress: bool,
     http_version_pref: HttpVersionPref,
     https_only: bool,
     layers: Vec<BoxedClientServiceLayer>,
@@ -294,6 +295,7 @@ impl Client {
                 cookie_store: None,
                 dns_overrides: HashMap::new(),
                 dns_resolver: None,
+                resolver_enforced_egress: false,
                 http_version_pref: HttpVersionPref::All,
                 https_only: false,
                 http1_options: None,
@@ -505,6 +507,7 @@ impl ClientBuilder {
             };
 
             let connector = ConnectorBuilder::new(config.proxies, resolver)
+                .resolver_enforced_egress(config.resolver_enforced_egress)
                 .timer(config.timer.clone())
                 .timeout(config.connect_timeout)
                 .tls_info(config.tls_info)
@@ -1577,6 +1580,27 @@ impl ClientBuilder {
     #[inline]
     pub fn dns_resolver<R: IntoResolve>(mut self, resolver: R) -> ClientBuilder {
         self.config.dns_resolver = Some(resolver.into_shared());
+        self
+    }
+
+    /// Route every socket destination through the configured resolver, including IP literals.
+    ///
+    /// When enabled, the resolver decides the exact address of every outgoing connection:
+    ///
+    /// - direct connections resolve IP-literal hosts through the resolver instead of parsing
+    ///   them locally;
+    /// - HTTP proxies are always used through a `CONNECT` tunnel (for `http` and `https`
+    ///   targets) whose authority is the resolved numeric address;
+    /// - SOCKS proxies always receive a locally resolved numeric address, also for the
+    ///   remote-DNS schemes (`socks4a`, `socks5h`).
+    ///
+    /// The original request authority is kept for `Host`, SNI and certificate verification. A
+    /// rejected `CONNECT` fails the request; there is no fallback to forward-proxying.
+    ///
+    /// Default is `false`.
+    #[inline]
+    pub fn resolver_enforced_egress(mut self, enabled: bool) -> ClientBuilder {
+        self.config.resolver_enforced_egress = enabled;
         self
     }
 

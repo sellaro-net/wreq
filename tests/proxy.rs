@@ -436,3 +436,120 @@ async fn proxy_tunnel_connect_error() {
         }
     }
 }
+
+/// Resolver that maps a fixed name table and records every name it was asked for.
+#[derive(Clone, Default)]
+struct TableResolver {
+    table: std::sync::Arc<std::collections::HashMap<&'static str, std::net::SocketAddr>>,
+    queried: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl TableResolver {
+    fn new(entries: &[(&'static str, std::net::SocketAddr)]) -> Self {
+        Self {
+            table: std::sync::Arc::new(entries.iter().copied().collect()),
+            queried: Default::default(),
+        }
+    }
+
+    fn queried(&self) -> Vec<String> {
+        self.queried.lock().unwrap().clone()
+    }
+}
+
+impl wreq::dns::Resolve for TableResolver {
+    fn resolve(&self, name: wreq::dns::Name) -> wreq::dns::Resolving {
+        self.queried.lock().unwrap().push(name.as_str().to_owned());
+        let answer = self.table.get(name.as_str()).copied();
+        Box::pin(async move {
+            match answer {
+                Some(addr) => Ok(Box::new(std::iter::once(addr)) as wreq::dns::Addrs),
+                None => Err("name rejected by resolver".into()),
+            }
+        })
+    }
+}
+
+#[tokio::test]
+async fn resolver_enforced_egress_resolves_ip_literals() {
+    let server = server::http(move |_req| async { http::Response::default() });
+    let port = server.addr().port();
+    let resolver = TableResolver::new(&[("192.0.2.10", ([127, 0, 0, 1], 0).into())]);
+
+    let client = Client::builder()
+        .no_proxy()
+        .dns_resolver(resolver.clone())
+        .resolver_enforced_egress(true)
+        .build()
+        .unwrap();
+
+    // The literal is unreachable; only the resolver answer leads to the test server.
+    let res = client
+        .get(format!("http://192.0.2.10:{port}/"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), wreq::StatusCode::OK);
+    assert_eq!(resolver.queried(), ["192.0.2.10"]);
+
+    // A literal the resolver rejects must fail instead of being dialed directly.
+    let err = client
+        .get(format!("http://127.0.0.1:{port}/"))
+        .send()
+        .await
+        .unwrap_err();
+    assert!(err.is_connect(), "connect error expected, got: {err:?}");
+}
+
+#[tokio::test]
+async fn resolver_enforced_egress_tunnels_http_to_numeric_target() {
+    let connect_target = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let recorded = connect_target.clone();
+    let server = server::http(move |req| {
+        *recorded.lock().unwrap() = Some((
+            req.method().clone(),
+            req.uri().to_string(),
+            req.headers().get("host").cloned(),
+        ));
+        async {
+            // return 400 to not actually deal with tunneling
+            let mut res = http::Response::default();
+            *res.status_mut() = http::StatusCode::BAD_REQUEST;
+            res
+        }
+    });
+
+    let resolver = TableResolver::new(&[
+        ("127.0.0.1", server.addr()),
+        ("hyper.rs.local", ([192, 0, 2, 10], 0).into()),
+    ]);
+    let proxy = format!("http://{}", server.addr());
+
+    let err = Client::builder()
+        .proxy(wreq::Proxy::http(&proxy).unwrap())
+        .dns_resolver(resolver.clone())
+        .resolver_enforced_egress(true)
+        .build()
+        .unwrap()
+        .get("http://hyper.rs.local/prox")
+        .send()
+        .await
+        .unwrap_err();
+
+    // No fallback to forward-proxying after the rejected CONNECT.
+    let err = support::error::inspect(err).pop().unwrap();
+    assert!(
+        err.contains("unsuccessful"),
+        "tunnel unsuccessful expected, got: {err:?}"
+    );
+    let (method, uri, host) = connect_target.lock().unwrap().take().unwrap();
+    assert_eq!(method, http::Method::CONNECT);
+    assert_eq!(uri, "192.0.2.10:80");
+    assert_eq!(host.unwrap(), "192.0.2.10:80");
+    assert!(
+        resolver
+            .queried()
+            .iter()
+            .any(|name| name == "hyper.rs.local")
+    );
+}
