@@ -411,8 +411,9 @@ where
         // - Meanwhile, the pool Checkout is watching to see if any other request finishes and tries
         //   to insert an idle connection.
         // - If a new connection is started, but the Checkout wins after (an idle connection became
-        //   available first), the started connection future is spawned into the runtime to
-        //   complete, and then be inserted into the pool as an idle connection.
+        //   available first), the default policy spawns the started connection to
+        //   complete and insert it into the pool. Explicit no-retry transport mode
+        //   drops the loser so no connector can outlive its owning request/context.
         let checkout = self.pool.checkout(descriptor.id());
         let connect = self.connect_to(descriptor);
         let is_ver_h2 = self.config.ver == Ver::Http2;
@@ -422,17 +423,18 @@ where
         match futures_util::future::select(checkout, connect).await {
             // Checkout won, connect future may have been started or not.
             //
-            // If it has, let it finish and insert back into the pool,
-            // so as to not waste the socket...
+            // With the default policy, let it finish and insert back into the
+            // pool so as to not waste the socket.
             Either::Left((Ok(checked_out), connecting)) => {
                 // This depends on the `select` above having the correct
                 // order, such that if the checkout future were ready
                 // immediately, the connect future will never have been
                 // started.
                 //
-                // If it *wasn't* ready yet, then the connect future will
-                // have been started...
-                if connecting.started() {
+                // An explicitly disabled retry policy also keeps speculative
+                // connectors request-owned: dropping the losing future releases
+                // its socket, proxy credentials and strong pool reference.
+                if self.config.retry_canceled_requests && connecting.started() {
                     let bg = connecting
                         .map_err(|_err| {
                             trace!("background connect error: {}", _err);
@@ -839,6 +841,13 @@ impl Builder {
             #[cfg(feature = "cookies")]
             cookie_store: None,
         }
+    }
+
+    /// Whether requests canceled on a reused connection are retried, and whether a connection
+    /// started speculatively while waiting for the pool is completed in the background.
+    pub(crate) fn retry_canceled_requests(mut self, enabled: bool) -> Self {
+        self.config.retry_canceled_requests = enabled;
+        self
     }
 
     /// Set an optional timeout for idle sockets being kept-alive.

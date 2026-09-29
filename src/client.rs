@@ -591,6 +591,10 @@ impl ClientBuilder {
             }
 
             builder
+                .retry_canceled_requests(!matches!(
+                    config.retry_policy.classifier,
+                    layer::retry::Classifier::Never
+                ))
                 .http1_options(config.http1_options)
                 .http2_options(config.http2_options)
                 .http2_only(matches!(config.http_version_pref, HttpVersionPref::Http2))
@@ -1035,6 +1039,12 @@ impl ClientBuilder {
     // Retry options
 
     /// Set a request retry policy.
+    ///
+    /// A policy that never retries (such as [`retry::Policy::never()`] without a custom
+    /// classifier) also disables the connection pool's transparent retry of requests canceled on
+    /// a reused connection. In that mode, when an idle pooled connection becomes available while
+    /// a new connection is still being established, the pending connection is dropped instead
+    /// of being completed in the background, so no connector outlives its request.
     pub fn retry(mut self, policy: retry::Policy) -> ClientBuilder {
         self.config.retry_policy = policy;
         self
