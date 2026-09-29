@@ -661,3 +661,35 @@ async fn socks4_sends_proxy_username_as_user_id() {
         b"\x04\x01\x1f\x90\xc0\x00\x02\x0aident-user\x00"
     );
 }
+
+#[tokio::test]
+async fn tunnel_rejects_oversized_connect_response_head() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0; 1024];
+        let _ = stream.read(&mut request).await.unwrap();
+        // A status line followed by an endless header section.
+        stream.write_all(b"HTTP/1.1 200 OK\r\n").await.unwrap();
+        let filler = format!("x-filler: {}\r\n", "a".repeat(1000));
+        while stream.write_all(filler.as_bytes()).await.is_ok() {}
+    });
+
+    let err = Client::builder()
+        .proxy(wreq::Proxy::https(format!("http://{proxy_addr}")).unwrap())
+        .build()
+        .unwrap()
+        .get("https://hyper.rs.local/prox")
+        .send()
+        .await
+        .unwrap_err();
+
+    let err = support::error::inspect(err).pop().unwrap();
+    assert!(
+        err.contains("unsuccessful"),
+        "tunnel unsuccessful expected, got: {err:?}"
+    );
+}
