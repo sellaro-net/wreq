@@ -637,3 +637,27 @@ async fn socks4_uses_ipv4_answer_and_exposes_error_source() {
         "unexpected error chain: {chain:?}"
     );
 }
+
+#[cfg(feature = "socks")]
+#[tokio::test]
+async fn socks4_sends_proxy_username_as_user_id() {
+    let (proxy_addr, request) = rejecting_socks4_server().await;
+
+    let err = Client::builder()
+        .proxy(wreq::Proxy::all(format!("socks4://ident%2Duser@{proxy_addr}")).unwrap())
+        .build()
+        .unwrap()
+        .get("http://192.0.2.10:8080/")
+        .send()
+        .await
+        .unwrap_err();
+
+    assert!(
+        err.is_proxy_connect(),
+        "proxy connect error expected, got: {err:?}"
+    );
+    assert_eq!(
+        request.await.unwrap(),
+        b"\x04\x01\x1f\x90\xc0\x00\x02\x0aident-user\x00"
+    );
+}

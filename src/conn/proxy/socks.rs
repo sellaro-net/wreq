@@ -206,8 +206,20 @@ where
 
             match version {
                 Version::V4 => {
-                    // For SOCKS4, we connect directly to the target address.
-                    let stream = Socks4Stream::connect_with_socket(socket, target_addr).await?;
+                    // For SOCKS4, we connect directly to the target address. SOCKS4 has no
+                    // password; a proxy username is sent as the request's user ID.
+                    let stream = match auth {
+                        Some((username, _)) => {
+                            let userid = std::str::from_utf8(&username)?;
+                            Socks4Stream::connect_with_userid_and_socket(
+                                socket,
+                                target_addr,
+                                userid,
+                            )
+                            .await?
+                        }
+                        None => Socks4Stream::connect_with_socket(socket, target_addr).await?,
+                    };
                     Ok(stream.into_inner())
                 }
                 Version::V5 => {
