@@ -321,6 +321,7 @@ pub mod header;
 pub mod redirect;
 pub mod retry;
 pub mod tls;
+pub mod traffic;
 
 #[cfg(feature = "multipart")]
 pub use self::client::multipart;

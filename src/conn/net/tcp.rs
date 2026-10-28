@@ -37,7 +37,10 @@ use futures_util::future::Either;
 use socket2::TcpKeepalive;
 
 use crate::{
-    conn::{Connection, net::SocketBindOptions},
+    conn::{
+        Connection,
+        net::{SocketBindOptions, counted::ReceiveQueue},
+    },
     dns,
     error::BoxError,
 };
@@ -55,6 +58,7 @@ pub trait TcpConnector: Clone + Send + Sync + 'static {
     type Connection: ::tokio::io::AsyncRead
         + ::tokio::io::AsyncWrite
         + Connection
+        + ReceiveQueue
         + Send
         + Unpin
         + 'static;
@@ -925,6 +929,13 @@ mod tests {
 
         fn sleep(&self, duration: Duration) -> Self::Sleep {
             ::tokio::time::sleep(duration)
+        }
+    }
+
+    impl crate::conn::net::counted::ReceiveQueue for ::tokio::io::DuplexStream {
+        #[cfg(unix)]
+        fn receive_queue_fd(&self) -> Option<std::os::fd::RawFd> {
+            None
         }
     }
 

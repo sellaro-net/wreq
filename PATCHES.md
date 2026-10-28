@@ -14,6 +14,7 @@ This fork follows upstream `wreq` and carries the patches below. Each patch is o
 | `0689b69` | tls | `TlsOptions::server_padding_request(Option<u16>)` sends the `server_padding` ClientHello extension (0x12e0) on origin handshakes. | `None` |
 | `1aa7226` | http2 | `RequestBuilder::headers_priority(HeadersPriority)` overrides the HEADERS frame priority of one request; `wreq::http2` re-exports `HeadersPriority`. | connection default |
 | `36b819b` | deps | `http2` is pinned to the upstream repository revision that provides `ext::HeadersPriority`. | – |
+| `5884ca9` | traffic | `ClientBuilder::transport_observer(impl TransportObserver)` reports each transport connection (TCP, Unix) before its first byte and every byte it moves, at the socket below proxy handshakes and TLS; bytes still queued in the kernel at close count as read (Unix). `TrafficCounter` sums a client's connections. | no observer |
 
 ## Dependencies outside crates.io
 
