@@ -119,6 +119,7 @@ pub struct HttpConnector<R, S> {
     options: Arc<TcpOptions>,
     resolver: R,
     connector: S,
+    resolver_enforced_egress: bool,
 }
 
 /// Extra information about the transport when an HttpConnector is used.
@@ -169,7 +170,12 @@ impl<R, S> HttpConnector<R, S> {
             }),
             resolver,
             connector,
+            resolver_enforced_egress: false,
         }
+    }
+
+    pub(crate) fn resolver_enforced_egress(&mut self, enabled: bool) {
+        self.resolver_enforced_egress = enabled;
     }
 
     fn config_mut(&mut self) -> &mut TcpOptions {
@@ -367,7 +373,10 @@ where
             let (host, port) = get_host_port(options, &dst)?;
             let host = crate::util::strip_ipv6_brackets(host);
 
-            let addrs = if let Some(addrs) = dns::SocketAddrs::try_parse(host, port) {
+            let literal = (!this.resolver_enforced_egress)
+                .then(|| dns::SocketAddrs::try_parse(host, port))
+                .flatten();
+            let addrs = if let Some(addrs) = literal {
                 addrs
             } else {
                 let addrs = dns::resolve(&mut this.resolver, dns::Name::new(host.into()))
