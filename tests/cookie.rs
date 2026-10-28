@@ -361,3 +361,44 @@ async fn cookie_request_order_matches_chromium() {
         .await
         .unwrap();
 }
+
+/// A provider set on the request replaces the client's for that request in both directions:
+/// it supplies the `Cookie` field and receives the response's `Set-Cookie` fields.
+#[tokio::test]
+async fn request_cookie_provider_replaces_the_client_provider() {
+    let server = server::http(|req| async move {
+        let sent = req
+            .headers()
+            .get(COOKIE)
+            .map(|value| value.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        http::Response::builder()
+            .header("set-cookie", "fresh=1; Path=/")
+            .body(sent.into())
+            .unwrap()
+    });
+    let base_url = format!("http://{}", server.addr());
+
+    let client_jar = Arc::new(Jar::default());
+    client_jar.add("owner=client; Path=/", &base_url);
+    let request_jar = Arc::new(Jar::default());
+    request_jar.add("owner=request; Path=/", &base_url);
+    let client = Client::builder()
+        .cookie_provider(client_jar.clone())
+        .build()
+        .unwrap();
+
+    let sent = client
+        .get(format!("{base_url}/"))
+        .cookie_provider(request_jar.clone())
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert_eq!(sent, "owner=request");
+    assert!(request_jar.get("fresh", &base_url).is_some());
+    assert!(client_jar.get("fresh", &base_url).is_none());
+}
