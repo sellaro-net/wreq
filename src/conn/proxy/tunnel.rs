@@ -11,10 +11,6 @@ use tower::{BoxError, Service};
 use super::Tunneling;
 use crate::ext::UriExt;
 
-/// Upper bound for the proxy's `CONNECT` response head. The response comes from the proxy, not
-/// the origin, so it is bounded independently of any response limits configured by the caller.
-const MAX_CONNECT_RESPONSE_HEAD: usize = 16 * 1024;
-
 /// Tunnel Proxy via HTTP CONNECT
 ///
 /// This is a connector that can be used by the `Client`. It wraps
@@ -184,17 +180,7 @@ where
     let mut buf = BytesMut::with_capacity(8192);
 
     loop {
-        if buf.len() >= MAX_CONNECT_RESPONSE_HEAD {
-            return Err(TunnelError::TunnelUnsuccessful);
-        }
-        let remaining = (MAX_CONNECT_RESPONSE_HEAD - buf.len()) as u64;
-        if (&mut conn)
-            .take(remaining)
-            .read_buf(&mut buf)
-            .await
-            .map_err(TunnelError::Io)?
-            == 0
-        {
+        if conn.read_buf(&mut buf).await.map_err(TunnelError::Io)? == 0 {
             return Err(TunnelError::TunnelUnexpectedEof);
         }
 

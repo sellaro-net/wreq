@@ -321,7 +321,6 @@ pub mod header;
 pub mod redirect;
 pub mod retry;
 pub mod tls;
-pub mod traffic;
 
 #[cfg(feature = "multipart")]
 pub use self::client::multipart;
@@ -352,12 +351,9 @@ pub mod http1 {
 pub mod http2 {
     //! HTTP/2 protocol implementation and utilities.
 
-    pub use http2::{
-        ext::HeadersPriority,
-        frame::{
-            Priorities, PrioritiesBuilder, Priority, PseudoId, PseudoOrder, Setting, SettingId,
-            SettingsOrder, SettingsOrderBuilder, StreamDependency, StreamId,
-        },
+    pub use http2::frame::{
+        Priorities, PrioritiesBuilder, Priority, PseudoId, PseudoOrder, Setting, SettingId,
+        SettingsOrder, SettingsOrderBuilder, StreamDependency, StreamId,
     };
     pub use wreq_proto::http2::{Http2Options, Http2OptionsBuilder};
 }

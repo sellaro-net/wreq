@@ -36,7 +36,6 @@ use crate::{
             EstablishedConn, HttpsConnector, MaybeHttpsStream, TlsConnector, TlsConnectorBuilder,
         },
     },
-    traffic::TransportObserver,
 };
 
 /// Client-wide connection settings retained by each transport connector.
@@ -50,8 +49,6 @@ struct Config {
     verbose: Verbose,
     nodelay: bool,
     tls_info: bool,
-    resolver_enforced_egress: bool,
-    observer: Option<Arc<dyn TransportObserver>>,
 }
 
 /// Assembles the transport service graph used by a client.
@@ -62,6 +59,7 @@ pub struct ConnectorBuilder {
     config: Config,
     timer: Timer,
     timeout: Option<Duration>,
+    #[cfg(feature = "socks")]
     resolver: DynResolver,
     http: HttpConnector,
     builder: TlsConnectorBuilder,
@@ -86,6 +84,7 @@ pub type Connector = Either<
 #[derive(Clone)]
 pub struct TransportConnector {
     config: Config,
+    #[cfg(feature = "socks")]
     resolver: DynResolver,
     tls: TlsConnector,
     http: HttpConnector,
@@ -103,11 +102,10 @@ impl ConnectorBuilder {
                 verbose: Verbose::OFF,
                 nodelay: true,
                 tls_info: false,
-                resolver_enforced_egress: false,
-                observer: None,
             },
             timer: Timer::default(),
             timeout: None,
+            #[cfg(feature = "socks")]
             resolver: resolver.clone(),
             http: HttpConnector::new(resolver, TcpConnector::new()),
             builder: TlsConnector::builder(),
@@ -162,22 +160,6 @@ impl ConnectorBuilder {
         self
     }
 
-    pub(crate) fn resolver_enforced_egress(mut self, enabled: bool) -> Self {
-        self.config.resolver_enforced_egress = enabled;
-        self.http.resolver_enforced_egress(enabled);
-        self
-    }
-
-    /// Reports every byte of every transport connection to `observer` ([`crate::traffic`]).
-    pub(crate) fn transport_observer(
-        mut self,
-        observer: Option<Arc<dyn TransportObserver>>,
-    ) -> Self {
-        self.http.transport_observer(observer.clone());
-        self.config.observer = observer;
-        self
-    }
-
     /// Sets the TCP_NODELAY option for connections.
     #[inline]
     pub fn tcp_nodelay(mut self, enabled: bool) -> ConnectorBuilder {
@@ -194,6 +176,7 @@ impl ConnectorBuilder {
         let timeout = TimeoutLayer::new(self.timer, self.timeout);
         let service = TransportConnector {
             config: self.config,
+            #[cfg(feature = "socks")]
             resolver: self.resolver.clone(),
             http: self.http,
             tls: self
@@ -388,11 +371,7 @@ impl TransportConnector {
                             );
                             socks.set_auth(proxy.raw_auth());
                             socks.set_version(version);
-                            socks.set_dns_mode(if self.config.resolver_enforced_egress {
-                                DnsResolve::Local
-                            } else {
-                                dns_resolve
-                            });
+                            socks.set_dns_mode(dns_resolve);
                             socks.call(uri).await?
                         };
 
@@ -415,7 +394,7 @@ impl TransportConnector {
                     }
                 }
 
-                if is_https || self.config.resolver_enforced_egress {
+                if is_https {
                     trace!("tunneling over HTTP(s) proxy: {:?}", proxy_uri);
 
                     // Build an HTTPS connector.
@@ -423,14 +402,8 @@ impl TransportConnector {
 
                     // Build a tunnel connector to establish the CONNECT tunnel.
                     let tunneled = {
-                        let mut proxy_connector = connector.clone();
-                        if self.config.resolver_enforced_egress {
-                            // CONNECT is HTTP/1.1, even if the origin profile negotiates h2.
-                            // Modify only the outer proxy TLS leg, never the origin leg.
-                            proxy_connector.no_alpn();
-                        }
                         let mut tunnel =
-                            proxy::tunnel::TunnelConnector::new(proxy_uri, proxy_connector);
+                            proxy::tunnel::TunnelConnector::new(proxy_uri, connector.clone());
 
                         // If the proxy requires basic authentication, add it to the tunnel.
                         if let Some(auth) = proxy.basic_auth() {
@@ -442,33 +415,8 @@ impl TransportConnector {
                             tunnel = tunnel.with_headers(headers.clone());
                         }
 
-                        // Only the tunnel authority changes. Origin TLS/HTTP metadata stays
-                        // in descriptor, so IP pinning never disables hostname verification.
-                        let target = if self.config.resolver_enforced_egress {
-                            let host = uri.host().ok_or_else(|| {
-                                std::io::Error::other("missing tunnel destination")
-                            })?;
-                            let mut resolver = self.resolver.clone();
-                            let mut addresses = crate::dns::resolve(
-                                &mut resolver,
-                                crate::dns::Name::new(
-                                    crate::util::strip_ipv6_brackets(host).into(),
-                                ),
-                            )
-                            .await?;
-                            let mut address = addresses
-                                .next()
-                                .ok_or_else(|| std::io::Error::other("empty tunnel resolution"))?;
-                            address.set_port(uri.port_or_default());
-                            http::Uri::builder()
-                                .scheme(uri.scheme().cloned().unwrap_or(http::uri::Scheme::HTTP))
-                                .authority(address.to_string())
-                                .path_and_query("/")
-                                .build()?
-                        } else {
-                            uri
-                        };
-                        tunnel.call(target).await?
+                        // Connect to the proxy and establish the tunnel.
+                        tunnel.call(uri).await?
                     };
 
                     // Wrap the established tunneled stream with TLS.
@@ -497,10 +445,8 @@ impl TransportConnector {
                 trace!("connecting via Unix socket: {:?}", unix_socket);
 
                 // Create a Unix connector with the specified socket path.
-                let mut connector = HttpsConnector::new(
-                    UnixConnector::new(unix_socket, self.config.observer.clone()),
-                    self.tls.clone(),
-                );
+                let mut connector =
+                    HttpsConnector::new(UnixConnector::new(unix_socket), self.tls.clone());
 
                 // If the target URI is HTTPS, establish a CONNECT tunnel over the Unix socket,
                 // then upgrade the tunneled stream to TLS.

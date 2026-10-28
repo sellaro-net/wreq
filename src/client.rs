@@ -178,20 +178,12 @@ struct Config {
         feature = "deflate",
     ))]
     accept_encoding: AcceptEncoding,
-    #[cfg(any(
-        feature = "gzip",
-        feature = "zstd",
-        feature = "brotli",
-        feature = "deflate",
-    ))]
-    auto_accept_encoding: bool,
     connect_timeout: Option<Duration>,
     connection_verbose: bool,
     pool_idle_timeout: Option<Duration>,
     pool_max_idle_per_host: usize,
     pool_max_size: Option<NonZeroUsize>,
     tcp_nodelay: bool,
-    transport_observer: Option<Arc<dyn crate::traffic::TransportObserver>>,
     tcp_reuse_address: bool,
     tcp_linger: Option<Duration>,
     tcp_keepalive: Option<Duration>,
@@ -215,7 +207,6 @@ struct Config {
     hickory_dns: bool,
     dns_overrides: HashMap<Cow<'static, str>, Vec<SocketAddr>>,
     dns_resolver: Option<Arc<dyn Resolve>>,
-    resolver_enforced_egress: bool,
     http_version_pref: HttpVersionPref,
     https_only: bool,
     layers: Vec<BoxedClientServiceLayer>,
@@ -274,13 +265,6 @@ impl Client {
                     feature = "deflate",
                 ))]
                 accept_encoding: AcceptEncoding::default(),
-                #[cfg(any(
-                    feature = "gzip",
-                    feature = "zstd",
-                    feature = "brotli",
-                    feature = "deflate",
-                ))]
-                auto_accept_encoding: true,
                 connect_timeout: None,
                 connection_verbose: false,
                 pool_idle_timeout: Some(Duration::from_secs(90)),
@@ -292,7 +276,6 @@ impl Client {
                 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
                 tcp_user_timeout: Some(Duration::from_secs(30)),
                 tcp_nodelay: true,
-                transport_observer: None,
                 tcp_reuse_address: false,
                 tcp_linger: None,
                 tcp_send_buffer_size: None,
@@ -311,7 +294,6 @@ impl Client {
                 cookie_store: None,
                 dns_overrides: HashMap::new(),
                 dns_resolver: None,
-                resolver_enforced_egress: false,
                 http_version_pref: HttpVersionPref::All,
                 https_only: false,
                 http1_options: None,
@@ -523,8 +505,6 @@ impl ClientBuilder {
             };
 
             let connector = ConnectorBuilder::new(config.proxies, resolver)
-                .resolver_enforced_egress(config.resolver_enforced_egress)
-                .transport_observer(config.transport_observer.clone())
                 .timer(config.timer.clone())
                 .timeout(config.connect_timeout)
                 .tls_info(config.tls_info)
@@ -594,10 +574,6 @@ impl ClientBuilder {
             }
 
             builder
-                .retry_canceled_requests(!matches!(
-                    config.retry_policy.classifier,
-                    layer::retry::Classifier::Never
-                ))
                 .http1_options(config.http1_options)
                 .http2_options(config.http2_options)
                 .http2_only(matches!(config.http_version_pref, HttpVersionPref::Http2))
@@ -628,10 +604,7 @@ impl ClientBuilder {
                 feature = "deflate",
             ))]
             let service = ServiceBuilder::new()
-                .layer(DecompressionLayer::new(
-                    config.accept_encoding,
-                    config.auto_accept_encoding,
-                ))
+                .layer(DecompressionLayer::new(config.accept_encoding))
                 .service(service);
 
             let service = ServiceBuilder::new()
@@ -979,42 +952,6 @@ impl ClientBuilder {
         }
     }
 
-    /// Controls whether requests without an `Accept-Encoding` header get one generated from the
-    /// enabled decompression algorithms.
-    ///
-    /// When set to `false`, requests are sent with exactly the caller's headers: no
-    /// `Accept-Encoding` is added, and Range requests are not rewritten to
-    /// `Accept-Encoding: identity`. Responses carrying a supported `Content-Encoding` are still
-    /// decompressed. A caller-provided `Accept-Encoding` header is always sent unchanged.
-    ///
-    /// Default is `true`. This method exists even if no decompression feature is enabled; it has
-    /// no effect in that case.
-    #[inline]
-    pub fn auto_accept_encoding(self, enabled: bool) -> ClientBuilder {
-        #[cfg(any(
-            feature = "gzip",
-            feature = "zstd",
-            feature = "brotli",
-            feature = "deflate",
-        ))]
-        {
-            let mut this = self;
-            this.config.auto_accept_encoding = enabled;
-            this
-        }
-
-        #[cfg(not(any(
-            feature = "gzip",
-            feature = "zstd",
-            feature = "brotli",
-            feature = "deflate",
-        )))]
-        {
-            let _ = enabled;
-            self
-        }
-    }
-
     // Redirect options
 
     /// Set a `RedirectPolicy` for this client.
@@ -1042,12 +979,6 @@ impl ClientBuilder {
     // Retry options
 
     /// Set a request retry policy.
-    ///
-    /// A policy that never retries (such as [`retry::Policy::never()`] without a custom
-    /// classifier) also disables the connection pool's transparent retry of requests canceled on
-    /// a reused connection. In that mode, when an idle pooled connection becomes available while
-    /// a new connection is still being established, the pending connection is dropped instead
-    /// of being completed in the background, so no connector outlives its request.
     pub fn retry(mut self, policy: retry::Policy) -> ClientBuilder {
         self.config.retry_policy = policy;
         self
@@ -1217,17 +1148,6 @@ impl ClientBuilder {
     #[inline]
     pub fn tcp_nodelay(mut self, enabled: bool) -> ClientBuilder {
         self.config.tcp_nodelay = enabled;
-        self
-    }
-
-    /// Report every byte of every connection this client opens to `observer`, see
-    /// [`crate::traffic`]. The observer covers proxy handshakes, TLS and HTTP framing.
-    #[inline]
-    pub fn transport_observer<O>(mut self, observer: O) -> ClientBuilder
-    where
-        O: crate::traffic::TransportObserver,
-    {
-        self.config.transport_observer = Some(Arc::new(observer));
         self
     }
 
@@ -1657,27 +1577,6 @@ impl ClientBuilder {
     #[inline]
     pub fn dns_resolver<R: IntoResolve>(mut self, resolver: R) -> ClientBuilder {
         self.config.dns_resolver = Some(resolver.into_shared());
-        self
-    }
-
-    /// Route every socket destination through the configured resolver, including IP literals.
-    ///
-    /// When enabled, the resolver decides the exact address of every outgoing connection:
-    ///
-    /// - direct connections resolve IP-literal hosts through the resolver instead of parsing
-    ///   them locally;
-    /// - HTTP proxies are always used through a `CONNECT` tunnel (for `http` and `https`
-    ///   targets) whose authority is the resolved numeric address;
-    /// - SOCKS proxies always receive a locally resolved numeric address, also for the
-    ///   remote-DNS schemes (`socks4a`, `socks5h`).
-    ///
-    /// The original request authority is kept for `Host`, SNI and certificate verification. A
-    /// rejected `CONNECT` fails the request; there is no fallback to forward-proxying.
-    ///
-    /// Default is `false`.
-    #[inline]
-    pub fn resolver_enforced_egress(mut self, enabled: bool) -> ClientBuilder {
-        self.config.resolver_enforced_egress = enabled;
         self
     }
 

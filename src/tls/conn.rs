@@ -53,7 +53,6 @@ pub struct HandshakeSettings {
     alps_use_new_codepoint: bool,
     key_shares: Option<Cow<'static, [KeyShare]>>,
     random_aes_hw_override: bool,
-    server_padding_request: Option<u16>,
 }
 
 /// A Connector using BoringSSL to support `http` and `https` schemes.
@@ -151,11 +150,6 @@ impl TlsConnector {
         if self.settings.random_aes_hw_override {
             let random = (crate::util::fast_random() & 1) == 0;
             cfg.set_aes_hw_override(random);
-        }
-
-        // Request server padding (BoringSSL server_padding extension)
-        if let Some(num_bytes) = self.settings.server_padding_request {
-            cfg.set_server_padding_request(num_bytes);
         }
 
         // Set ALPN protocols
@@ -467,7 +461,6 @@ impl TlsConnectorBuilder {
             enable_ech_grease: opts.enable_ech_grease,
             key_shares: opts.key_shares.clone(),
             random_aes_hw_override: opts.random_aes_hw_override,
-            server_padding_request: opts.server_padding_request,
         };
 
         // If the session cache is disabled, we don't need to set up any callbacks.

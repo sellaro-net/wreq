@@ -17,20 +17,16 @@ use super::{
     Connection,
     net::{
         SocketBindOptions,
-        counted::Counted,
         tcp::{ConnectError, ConnectingTcp, TcpConnector, TcpKeepaliveOptions, TcpOptions},
     },
 };
-use crate::{
-    dns::{self, DnsResolver},
-    traffic::TransportObserver,
-};
+use crate::dns::{self, DnsResolver};
 
 static INVALID_NOT_HTTP: &str = "invalid URI, scheme is not http";
 static INVALID_MISSING_SCHEME: &str = "invalid URI, scheme is missing";
 static INVALID_MISSING_HOST: &str = "invalid URI, host is missing";
 
-type ConnectResult<S> = Result<Counted<<S as TcpConnector>::Connection>, ConnectError>;
+type ConnectResult<S> = Result<<S as TcpConnector>::Connection, ConnectError>;
 type BoxConnecting<S> = Pin<Box<dyn Future<Output = ConnectResult<S>> + Send>>;
 
 /// A trait for configuring HTTP transport options on a [`Service<Uri>`] connector.
@@ -123,8 +119,6 @@ pub struct HttpConnector<R, S> {
     options: Arc<TcpOptions>,
     resolver: R,
     connector: S,
-    resolver_enforced_egress: bool,
-    observer: Option<Arc<dyn TransportObserver>>,
 }
 
 /// Extra information about the transport when an HttpConnector is used.
@@ -175,18 +169,7 @@ impl<R, S> HttpConnector<R, S> {
             }),
             resolver,
             connector,
-            resolver_enforced_egress: false,
-            observer: None,
         }
-    }
-
-    pub(crate) fn resolver_enforced_egress(&mut self, enabled: bool) {
-        self.resolver_enforced_egress = enabled;
-    }
-
-    /// Reports every byte of every established socket to `observer` ([`crate::traffic`]).
-    pub(crate) fn transport_observer(&mut self, observer: Option<Arc<dyn TransportObserver>>) {
-        self.observer = observer;
     }
 
     fn config_mut(&mut self) -> &mut TcpOptions {
@@ -366,7 +349,7 @@ where
     S: TcpConnector,
     S::TcpStream: From<socket2::Socket>,
 {
-    type Response = Counted<S::Connection>;
+    type Response = S::Connection;
     type Error = ConnectError;
     type Future = HttpConnecting<R, S>;
 
@@ -384,10 +367,7 @@ where
             let (host, port) = get_host_port(options, &dst)?;
             let host = crate::util::strip_ipv6_brackets(host);
 
-            let literal = (!this.resolver_enforced_egress)
-                .then(|| dns::SocketAddrs::try_parse(host, port))
-                .flatten();
-            let addrs = if let Some(addrs) = literal {
+            let addrs = if let Some(addrs) = dns::SocketAddrs::try_parse(host, port) {
                 addrs
             } else {
                 let addrs = dns::resolve(&mut this.resolver, dns::Name::new(host.into()))
@@ -402,10 +382,9 @@ where
                 dns::SocketAddrs::new(addrs)
             };
 
-            let connection = ConnectingTcp::new(addrs, options, this.connector)
+            ConnectingTcp::new(addrs, options, this.connector)
                 .connect(options)
-                .await?;
-            Ok(Counted::new(connection, this.observer.as_ref()))
+                .await
         };
 
         HttpConnecting {
