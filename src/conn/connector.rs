@@ -36,6 +36,7 @@ use crate::{
             EstablishedConn, HttpsConnector, MaybeHttpsStream, TlsConnector, TlsConnectorBuilder,
         },
     },
+    traffic::TransportObserver,
 };
 
 /// Client-wide connection settings retained by each transport connector.
@@ -50,6 +51,7 @@ struct Config {
     nodelay: bool,
     tls_info: bool,
     resolver_enforced_egress: bool,
+    observer: Option<Arc<dyn TransportObserver>>,
 }
 
 /// Assembles the transport service graph used by a client.
@@ -102,6 +104,7 @@ impl ConnectorBuilder {
                 nodelay: true,
                 tls_info: false,
                 resolver_enforced_egress: false,
+                observer: None,
             },
             timer: Timer::default(),
             timeout: None,
@@ -162,6 +165,16 @@ impl ConnectorBuilder {
     pub(crate) fn resolver_enforced_egress(mut self, enabled: bool) -> Self {
         self.config.resolver_enforced_egress = enabled;
         self.http.resolver_enforced_egress(enabled);
+        self
+    }
+
+    /// Reports every byte of every transport connection to `observer` ([`crate::traffic`]).
+    pub(crate) fn transport_observer(
+        mut self,
+        observer: Option<Arc<dyn TransportObserver>>,
+    ) -> Self {
+        self.http.transport_observer(observer.clone());
+        self.config.observer = observer;
         self
     }
 
@@ -484,8 +497,10 @@ impl TransportConnector {
                 trace!("connecting via Unix socket: {:?}", unix_socket);
 
                 // Create a Unix connector with the specified socket path.
-                let mut connector =
-                    HttpsConnector::new(UnixConnector::new(unix_socket), self.tls.clone());
+                let mut connector = HttpsConnector::new(
+                    UnixConnector::new(unix_socket, self.config.observer.clone()),
+                    self.tls.clone(),
+                );
 
                 // If the target URI is HTTPS, establish a CONNECT tunnel over the Unix socket,
                 // then upgrade the tunneled stream to TLS.

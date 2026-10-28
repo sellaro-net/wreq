@@ -5,7 +5,9 @@ use std::{io, net::SocketAddr, time::Duration};
 use tokio::net::{TcpSocket, TcpStream};
 
 use super::BoxConnecting;
-use crate::conn::{Connected, Connection, http::HttpInfo, tls_info::TlsInfoFactory};
+use crate::conn::{
+    Connected, Connection, http::HttpInfo, net::counted::ReceiveQueue, tls_info::TlsInfoFactory,
+};
 
 /// A connector that uses `tokio` for TCP connections.
 #[derive(Clone, Copy, Debug, Default)]
@@ -55,3 +57,11 @@ impl Connection for TcpStream {
 }
 
 impl TlsInfoFactory for TcpStream {}
+
+impl ReceiveQueue for TcpStream {
+    #[cfg(unix)]
+    #[inline]
+    fn receive_queue_fd(&self) -> Option<std::os::fd::RawFd> {
+        Some(std::os::fd::AsRawFd::as_raw_fd(self))
+    }
+}

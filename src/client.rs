@@ -191,6 +191,7 @@ struct Config {
     pool_max_idle_per_host: usize,
     pool_max_size: Option<NonZeroUsize>,
     tcp_nodelay: bool,
+    transport_observer: Option<Arc<dyn crate::traffic::TransportObserver>>,
     tcp_reuse_address: bool,
     tcp_linger: Option<Duration>,
     tcp_keepalive: Option<Duration>,
@@ -291,6 +292,7 @@ impl Client {
                 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
                 tcp_user_timeout: Some(Duration::from_secs(30)),
                 tcp_nodelay: true,
+                transport_observer: None,
                 tcp_reuse_address: false,
                 tcp_linger: None,
                 tcp_send_buffer_size: None,
@@ -522,6 +524,7 @@ impl ClientBuilder {
 
             let connector = ConnectorBuilder::new(config.proxies, resolver)
                 .resolver_enforced_egress(config.resolver_enforced_egress)
+                .transport_observer(config.transport_observer.clone())
                 .timer(config.timer.clone())
                 .timeout(config.connect_timeout)
                 .tls_info(config.tls_info)
@@ -1214,6 +1217,17 @@ impl ClientBuilder {
     #[inline]
     pub fn tcp_nodelay(mut self, enabled: bool) -> ClientBuilder {
         self.config.tcp_nodelay = enabled;
+        self
+    }
+
+    /// Report every byte of every connection this client opens to `observer`, see
+    /// [`crate::traffic`]. The observer covers proxy handshakes, TLS and HTTP framing.
+    #[inline]
+    pub fn transport_observer<O>(mut self, observer: O) -> ClientBuilder
+    where
+        O: crate::traffic::TransportObserver,
+    {
+        self.config.transport_observer = Some(Arc::new(observer));
         self
     }
 
