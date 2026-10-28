@@ -9,10 +9,7 @@ use wreq_rt::rt::compio::{future::SendFuture, io::CompioIO};
 
 use super::BoxConnecting;
 use crate::conn::{
-    Connected, Connection,
-    http::HttpInfo,
-    net::{counted::ReceiveQueue, io::CompioConnection},
-    tls_info::TlsInfoFactory,
+    Connected, Connection, http::HttpInfo, net::io::CompioConnection, tls_info::TlsInfoFactory,
 };
 
 /// A connector that uses `compio` for TCP connections.
@@ -72,12 +69,3 @@ impl Connection for CompioConnection<TcpStream> {
 }
 
 impl TlsInfoFactory for CompioConnection<TcpStream> {}
-
-impl ReceiveQueue for CompioConnection<TcpStream> {
-    /// compio reads through its own buffer; the kernel queue is not the whole story.
-    #[cfg(unix)]
-    #[inline]
-    fn receive_queue_fd(&self) -> Option<std::os::fd::RawFd> {
-        None
-    }
-}

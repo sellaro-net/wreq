@@ -92,7 +92,7 @@ prefix-symbols = ["btls/prefix-symbols"]
 url = "2.5.8"
 bytes = "1.11.1"
 http = "1.4.0"
-http2 = "0.5.20"
+http2 = "0.5.17"
 httparse = "1.10.1"
 http-body = "1.0.1"
 http-body-util = "0.1.4"
@@ -382,5 +382,3 @@ required-features = ["compio-rt"]
 [patch.crates-io]
 btls = { git = "https://github.com/0x676e67/btls", branch = "main" }
 btls-sys = { git = "https://github.com/0x676e67/btls", branch = "main" }
-# `http2::ext::HeadersPriority` (per-request HEADERS priority) is not in a crates.io release yet.
-http2 = { git = "https://github.com/0x676e67/http2", rev = "bdb2c60cd9b4125c28913191b6f758d00e5f136c" }

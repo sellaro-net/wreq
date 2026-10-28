@@ -11,34 +11,21 @@ use http::Uri;
 use tokio::net::UnixStream;
 
 use super::BoxConnecting;
-use crate::{
-    conn::{Connected, Connection, net::counted::{Counted, ReceiveQueue}, tls_info::TlsInfoFactory},
-    traffic::TransportObserver,
-};
+use crate::conn::{Connected, Connection, tls_info::TlsInfoFactory};
 
 #[derive(Clone)]
-pub struct UnixConnector {
-    path: Arc<Path>,
-    observer: Option<Arc<dyn TransportObserver>>,
-}
+pub struct UnixConnector(Arc<Path>);
 
 impl UnixConnector {
-    /// Creates a new [`UnixConnector`] for the specified socket path; `observer` sees every
-    /// byte of its connections.
+    /// Creates a new [`UnixConnector`] for the specified socket path.
     #[inline]
-    pub fn new(
-        path: impl Into<Arc<Path>>,
-        observer: Option<Arc<dyn TransportObserver>>,
-    ) -> Self {
-        Self {
-            path: path.into(),
-            observer,
-        }
+    pub fn new(path: impl Into<Arc<Path>>) -> Self {
+        Self(path.into())
     }
 }
 
 impl tower::Service<Uri> for UnixConnector {
-    type Response = Counted<UnixStream>;
+    type Response = UnixStream;
     type Error = io::Error;
     type Future = BoxConnecting<Self::Response>;
 
@@ -47,13 +34,9 @@ impl tower::Service<Uri> for UnixConnector {
         Poll::Ready(Ok(()))
     }
 
+    #[inline]
     fn call(&mut self, _: Uri) -> Self::Future {
-        let path = self.path.clone();
-        let observer = self.observer.clone();
-        Box::pin(async move {
-            let stream = UnixStream::connect(path).await?;
-            Ok(Counted::new(stream, observer.as_ref()))
-        })
+        Box::pin(UnixStream::connect(self.0.clone()))
     }
 }
 
@@ -65,11 +48,3 @@ impl Connection for UnixStream {
 }
 
 impl TlsInfoFactory for UnixStream {}
-
-impl ReceiveQueue for UnixStream {
-    #[cfg(unix)]
-    #[inline]
-    fn receive_queue_fd(&self) -> Option<std::os::fd::RawFd> {
-        Some(std::os::fd::AsRawFd::as_raw_fd(self))
-    }
-}

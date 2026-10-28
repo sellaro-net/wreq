@@ -1,6 +1,5 @@
 //! Network connection types and utilities.
 
-pub(super) mod counted;
 pub(super) mod tcp;
 
 if_any_rt!(

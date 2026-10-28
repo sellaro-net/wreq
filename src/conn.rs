@@ -1,5 +1,5 @@
 mod timeout;
-pub(super) mod tls_info;
+mod tls_info;
 mod verbose;
 
 pub(super) mod connector;

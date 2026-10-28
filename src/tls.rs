@@ -256,15 +256,6 @@ pub struct TlsOptions {
     /// [`trust_anchors` extension]: https://datatracker.ietf.org/doc/html/draft-ietf-tls-trust-anchor-ids-04#section-4.1
     pub trust_anchors: Option<Cow<'static, [u8]>>,
 
-    /// Number of bytes of padding requested from the server with BoringSSL's experimental
-    /// `server_padding` ClientHello extension (codepoint `0x12e0`).
-    ///
-    /// `Some(0)` sends the extension with a zero-byte request; `None` omits it. The extension is
-    /// only sent on origin handshakes, not on the TLS connection to an HTTPS proxy.
-    ///
-    /// **Default:** `None`
-    pub server_padding_request: Option<u16>,
-
     /// Enables TLS renegotiation by sending the `renegotiation_info` extension.
     ///
     /// **Default:** `true`
@@ -494,18 +485,6 @@ impl TlsOptionsBuilder {
         self
     }
 
-    /// Sets the number of padding bytes requested with the `server_padding` extension.
-    ///
-    /// See [`TlsOptions::server_padding_request`].
-    #[inline]
-    pub fn server_padding_request<T>(mut self, num_bytes: T) -> Self
-    where
-        T: Into<Option<u16>>,
-    {
-        self.config.server_padding_request = num_bytes.into();
-        self
-    }
-
     /// Sets the supported curves list.
     #[inline]
     pub fn curves_list<T>(mut self, curves: T) -> Self
@@ -628,7 +607,6 @@ impl Default for TlsOptions {
             record_size_limit: None,
             key_shares: None,
             trust_anchors: None,
-            server_padding_request: None,
             psk_dhe_ke: true,
             pre_shared_key: false,
             psk_skip_session_ticket: false,

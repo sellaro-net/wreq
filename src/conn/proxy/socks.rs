@@ -52,17 +52,7 @@ impl std::fmt::Display for SocksError {
     }
 }
 
-impl std::error::Error for SocksError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::ConnectFailed(error) | Self::DnsResolveFailure(error) => Some(&**error),
-            Self::Socks(error) => Some(error),
-            Self::Io(error) => Some(error),
-            Self::Utf8(error) => Some(error),
-            Self::DnsFailure | Self::MissingHost => None,
-        }
-    }
-}
+impl std::error::Error for SocksError {}
 
 impl From<std::io::Error> for SocksError {
     fn from(err: std::io::Error) -> Self {
@@ -187,13 +177,9 @@ where
             // Resolve the target address using the provided resolver.
             let target_addr = match dns_resolve {
                 DnsResolve::Local => {
-                    // SOCKS4 can only carry IPv4 targets: pick the first IPv4 address of the
-                    // answer instead of failing on a leading IPv6 address.
                     let mut socket_addr = resolve(&mut resolver, Name::new(host.into()))
                         .await
-                        .map(|mut addrs| {
-                            addrs.find(|addr| !matches!(version, Version::V4) || addr.is_ipv4())
-                        })
+                        .map(|mut s| s.next())
                         .transpose()
                         .ok_or(SocksError::DnsFailure)?
                         .map_err(Into::into)
@@ -206,20 +192,8 @@ where
 
             match version {
                 Version::V4 => {
-                    // For SOCKS4, we connect directly to the target address. SOCKS4 has no
-                    // password; a proxy username is sent as the request's user ID.
-                    let stream = match auth {
-                        Some((username, _)) => {
-                            let userid = std::str::from_utf8(&username)?;
-                            Socks4Stream::connect_with_userid_and_socket(
-                                socket,
-                                target_addr,
-                                userid,
-                            )
-                            .await?
-                        }
-                        None => Socks4Stream::connect_with_socket(socket, target_addr).await?,
-                    };
+                    // For SOCKS4, we connect directly to the target address.
+                    let stream = Socks4Stream::connect_with_socket(socket, target_addr).await?;
                     Ok(stream.into_inner())
                 }
                 Version::V5 => {
